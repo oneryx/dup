@@ -1,0 +1,2 @@
+# dup
+Duplicated files finder
