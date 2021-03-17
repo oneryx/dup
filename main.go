@@ -172,7 +172,11 @@ func recursiveReadDir(path string, fds *[]FileDetail) error {
 			recursiveReadDir(fullpath, fds)
 		} else {
 			fi, _ := file.Info()
-			*fds = append(*fds, FileDetail{size: fi.Size(), path: fullpath})
+			size := fi.Size()
+			// 0 size file is lock file, we don't want to consider it for duplication check
+			if size > 0 {
+				*fds = append(*fds, FileDetail{size: size, path: fullpath})
+			}
 		}
 	}
 	return nil
