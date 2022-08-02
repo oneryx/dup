@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -177,28 +178,22 @@ func filterByHash(sizeMap map[string][]FileDetail, quick bool) (map[string][]Fil
 
 // recursive read all files under given dir
 func recursiveReadDir(path string, fds *[]FileDetail) error {
-	files, err := os.ReadDir(path)
-	if err != nil {
-		return err
-	}
-	for _, file := range files {
-		// ignore .git folder
-		if file.Name() == ".git" || file.Name() == ".DS_Store" {
-			continue
+	walkFunc := func(path string, d fs.DirEntry, err error) error {
+		name := d.Name()
+		if d.IsDir() && (name == ".git" || name == "@eaDir") {
+			return filepath.SkipDir
 		}
-		fullpath := filepath.Join(path, file.Name())
-		if file.IsDir() {
-			recursiveReadDir(fullpath, fds)
-		} else {
-			fi, _ := file.Info()
+		if !d.IsDir() && name != ".DS_Store" {
+			fi, _ := d.Info()
 			size := fi.Size()
 			// 0 size file is lock file, we don't want to consider it for duplication check
 			if size > 0 {
-				*fds = append(*fds, FileDetail{size: size, path: fullpath})
+				*fds = append(*fds, FileDetail{size: size, path: path})
 			}
 		}
+		return nil
 	}
-	return nil
+	return filepath.WalkDir(path, walkFunc)
 }
 
 // create hash(CRC32) string of file
