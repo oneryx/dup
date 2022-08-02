@@ -1,8 +1,8 @@
 package main
 
 import (
-	"crypto/sha256"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log"
 	"os"
@@ -20,7 +20,7 @@ const (
 )
 
 // file larger than this size will be considered as large file, will hash by samples instead of whole file
-const samplethreshold int64 = 3 * MB
+const samplethreshold int64 = 10 * MB
 
 // sample piece size
 const samplesize int64 = 4 * KB
@@ -29,6 +29,8 @@ const empty = ""
 
 // the base dir under which to look for duplicated files
 var basedir string
+
+var table = crc32.MakeTable(crc32.IEEE)
 
 func main() {
 	var err error
@@ -44,7 +46,7 @@ func main() {
 		log.Fatal(err)
 	}
 	for i, dg := range dups {
-		fmt.Printf("%d: %v", i, dg)
+		fmt.Printf("%d: %v", i+1, dg)
 	}
 }
 
@@ -67,7 +69,7 @@ func (fg FileGroup) String() string {
 	b := strings.Builder{}
 	b.WriteString("<Size: ")
 	b.WriteString(fg.size)
-	b.WriteString(" Bytes, SHA256: ")
+	b.WriteString(" Bytes, CRC32: ")
 	b.WriteString(fg.hash)
 	b.WriteString(", Duplication: ")
 	b.WriteString(strconv.Itoa(len(fg.files)))
@@ -83,32 +85,45 @@ func (fg FileGroup) String() string {
 
 // find duplicated files under dir
 func findDup(dir string) ([]FileGroup, error) {
-	fmt.Println("Looking for duplicated files under", dir)
+	log.Printf("Looking for duplicated files under %s\n", dir)
 	var err error
 	var quickHashMap map[string][]FileDetail
 	var hashMap map[string][]FileDetail
 	var fds = []FileDetail{}
 	var dups = []FileGroup{}
+
+	log.Println("recursiveReadDir")
 	if err = recursiveReadDir(basedir, &fds); err != nil {
 		return nil, err
 	}
+	log.Printf("Found %d files\n", len(fds))
 
+	log.Println("filterBySize")
 	sizeMap := filterBySize(&fds)
+	log.Printf("%d possible duplication groups left\n", len(sizeMap))
 
+	log.Println("filterByHash quick")
 	if quickHashMap, err = filterByHash(sizeMap, true); err != nil {
 		return nil, err
 	}
+	log.Printf("%d possible duplication groups left\n", len(quickHashMap))
+	if len(quickHashMap) == 0 {
+		log.Println("No duplication found!")
+		return dups, nil
+	}
 
+	log.Println("filterByHash normal")
 	if hashMap, err = filterByHash(quickHashMap, false); err != nil {
 		return nil, err
 	}
-
+	log.Printf("%d duplication groups found", len(quickHashMap))
+	if len(hashMap) == 0 {
+		log.Println("No duplication found!")
+		return dups, nil
+	}
 	for k, v := range hashMap {
 		s := strings.Split(k, "-")
 		dups = append(dups, FileGroup{size: s[0], hash: s[1], files: v})
-	}
-	if len(dups) == 0 {
-		fmt.Println("No duplication found!")
 	}
 	return dups, nil
 }
@@ -167,6 +182,10 @@ func recursiveReadDir(path string, fds *[]FileDetail) error {
 		return err
 	}
 	for _, file := range files {
+		// ignore .git folder
+		if file.Name() == ".git" || file.Name() == ".DS_Store" {
+			continue
+		}
 		fullpath := filepath.Join(path, file.Name())
 		if file.IsDir() {
 			recursiveReadDir(fullpath, fds)
@@ -182,7 +201,7 @@ func recursiveReadDir(path string, fds *[]FileDetail) error {
 	return nil
 }
 
-// create hash(SHA256) string of file
+// create hash(CRC32) string of file
 func hash(fd *FileDetail, quick bool) (string, error) {
 	if fd.hash != empty {
 		return fd.hash, nil
@@ -202,7 +221,7 @@ func hash(fd *FileDetail, quick bool) (string, error) {
 		if b, err = os.ReadFile(fd.path); err != nil {
 			return empty, err
 		}
-		hashstr = fmt.Sprintf("%x", sha256.Sum256(b))
+		hashstr = fmt.Sprintf("%x", crc32.Checksum(b, table))
 	}
 	fd.hash = hashstr
 	return hashstr, nil
@@ -218,10 +237,16 @@ func hashWithSampling(fd *FileDetail, size int64) (string, error) {
 	bb := make([]byte, samplesize)
 	s := io.NewSectionReader(f, 0, samplesize)
 	s.Read(bb)
+
+	// sample at middle of the file
+	bm := make([]byte, samplesize)
+	s.ReadAt(bm, size/2)
+
 	// sample at end of the file
 	be := make([]byte, samplesize)
 	s.ReadAt(be, size-samplesize)
-	// join both samples
-	b := append(bb, be...)
-	return fmt.Sprintf("%x", sha256.Sum256(b)), nil
+
+	// join 3 samples
+	b := append(append(bb, bm...), be...)
+	return fmt.Sprintf("%x", crc32.Checksum(b, table)), nil
 }
